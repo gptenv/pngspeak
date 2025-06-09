@@ -1,0 +1,4 @@
+#!/bin/bash
+
+python3 "$(realpath "$(dirname "${BASH_SOURCE[0]}")")/.pngspeak" $@
+
