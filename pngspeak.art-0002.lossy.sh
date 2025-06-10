@@ -6,5 +6,5 @@ if [ $# -lt 2 ]; then
     exit 1
 fi
 
-python3 "$(realpath "$(dirname "${BASH_SOURCE[0]}")")/.pngspeak" -W 16 -uw 2600 -uh 10400 < "$1" > "$2"
+python3 "$(realpath "$(dirname "${BASH_SOURCE[0]}")")/.pngspeak" -e -W 16 -uw 2600 -uh 10400 < "$1" > "$2"
 
