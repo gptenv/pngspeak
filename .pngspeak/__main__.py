@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys, argparse, struct, zlib, os, pathlib, random
-import numpy as np
 
 def read_bytes_from_source(n, rand_source):
     if rand_source is not None: # Ensure rand_source can be an empty string
@@ -35,17 +34,56 @@ def write_chunk(out, chunk_type, data):
     out.write(struct.pack(">I", checksum))
 
 def upscale_image(data, width, height, uw, uh):
+    """
+    Pillow-compatible bilinear interpolation for upscaling images.
+    This creates blended pixel values that match Pillow's default interpolation behavior,
+    making the embedded data unrecoverable while providing visually correct upscaling.
+    """
     bpp = 4
-    arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, bpp))
-    new_img = np.zeros((uh, uw, bpp), dtype=np.uint8)
-
-    for y in range(uh):
-        for x in range(uw):
-            src_x = int(x * width / uw)
-            src_y = int(y * height / uh)
-            new_img[y, x] = arr[src_y, src_x]
-
-    return new_img.tobytes()
+    result = bytearray(uw * uh * bpp)
+    
+    for out_y in range(uh):
+        for out_x in range(uw):
+            # Calculate source coordinates with floating point precision
+            src_x = (out_x + 0.5) * width / uw - 0.5
+            src_y = (out_y + 0.5) * height / uh - 0.5
+            
+            # Get integer coordinates and fractional parts
+            x0 = int(src_x)
+            y0 = int(src_y)
+            x1 = min(x0 + 1, width - 1)
+            y1 = min(y0 + 1, height - 1)
+            
+            # Clamp to bounds
+            x0 = max(0, x0)
+            y0 = max(0, y0)
+            
+            # Calculate fractional parts
+            dx = src_x - x0
+            dy = src_y - y0
+            
+            # Get the four surrounding pixels
+            def get_pixel(x, y):
+                offset = (y * width + x) * bpp
+                return [data[offset + c] for c in range(bpp)]
+            
+            p00 = get_pixel(x0, y0)
+            p10 = get_pixel(x1, y0)
+            p01 = get_pixel(x0, y1)
+            p11 = get_pixel(x1, y1)
+            
+            # Bilinear interpolation
+            out_offset = (out_y * uw + out_x) * bpp
+            for c in range(bpp):
+                # Interpolate horizontally for top and bottom rows
+                top = p00[c] * (1 - dx) + p10[c] * dx
+                bottom = p01[c] * (1 - dx) + p11[c] * dx
+                
+                # Interpolate vertically
+                value = top * (1 - dy) + bottom * dy
+                result[out_offset + c] = max(0, min(255, int(round(value))))
+    
+    return bytes(result)
 
 def encode(input_stream, output_stream, cli_width_arg, cli_height_arg, cli_length_arg, rand_source, uw=None, uh=None):
     import tempfile
