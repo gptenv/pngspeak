@@ -135,7 +135,8 @@ def encode(input_stream, output_stream, cli_width_arg, cli_height_arg, cli_lengt
     # iTXt header with new format using length_for_header (always original input length or --length)
     hex_val_for_header_str = length_for_header.to_bytes((length_for_header.bit_length() + 7) // 8 or 1, 'big').hex()
     len_of_part2_as_str_in_bytes = len(hex_val_for_header_str.encode('utf-8'))
-    hex_len_of_part2_str = len_of_part2_as_str_in_bytes.to_bytes(32, 'big').hex() # 256-bit = 32 bytes
+    # Use dynamic length for part1: only as many hex bytes as needed to represent the length
+    hex_len_of_part2_str = len_of_part2_as_str_in_bytes.to_bytes((len_of_part2_as_str_in_bytes.bit_length() + 7) // 8 or 1, 'big').hex()
     itxt_text_content = f"{hex_len_of_part2_str} {hex_val_for_header_str}"
     itxt_keyword_and_params = b"license\x00\x00\x00\x00\x00"
     write_chunk(output_stream, b"iTXt", itxt_keyword_and_params + itxt_text_content.encode("utf-8"))
