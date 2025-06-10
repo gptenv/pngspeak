@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import sys, argparse, struct, zlib, os, pathlib, random
-import numpy as np
 
 def read_bytes_from_source(n, rand_source):
     if rand_source is not None: # Ensure rand_source can be an empty string
@@ -35,17 +34,33 @@ def write_chunk(out, chunk_type, data):
     out.write(struct.pack(">I", checksum))
 
 def upscale_image(data, width, height, uw, uh):
+    """
+    Custom streaming-friendly nearest neighbor interpolation for upscaling images.
+    This implementation processes data without using numpy arrays,
+    making it more memory-efficient and streaming-friendly while maintaining
+    exact pixel values for data preservation.
+    """
     bpp = 4
-    arr = np.frombuffer(data, dtype=np.uint8).reshape((height, width, bpp))
-    new_img = np.zeros((uh, uw, bpp), dtype=np.uint8)
-
-    for y in range(uh):
-        for x in range(uw):
-            src_x = int(x * width / uw)
-            src_y = int(y * height / uh)
-            new_img[y, x] = arr[src_y, src_x]
-
-    return new_img.tobytes()
+    result = bytearray(uw * uh * bpp)
+    
+    for out_y in range(uh):
+        for out_x in range(uw):
+            # Calculate source coordinates using nearest neighbor
+            src_x = int(out_x * width / uw)
+            src_y = int(out_y * height / uh)
+            
+            # Ensure we don't go out of bounds
+            src_x = min(src_x, width - 1)
+            src_y = min(src_y, height - 1)
+            
+            # Copy pixel data
+            src_offset = (src_y * width + src_x) * bpp
+            out_offset = (out_y * uw + out_x) * bpp
+            
+            for c in range(bpp):
+                result[out_offset + c] = data[src_offset + c]
+    
+    return bytes(result)
 
 def encode(input_stream, output_stream, cli_width_arg, cli_height_arg, cli_length_arg, rand_source, uw=None, uh=None):
     import tempfile
