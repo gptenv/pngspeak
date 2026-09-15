@@ -203,90 +203,56 @@ def decode(input_stream, output_stream, length_override, rand_source, width=None
     import png  # you still need `pypng`
 
     r = png.Reader(file=input_stream)
-    w, h, pixels, meta = r.read_flat()
-    img_data = bytes(pixels)
 
+    w = h = None
+    idat_data = bytearray()
     decoded_length_from_header = None
 
-    if 'itxt' in meta:
-        for itxt_keyword, lang_tag, translated_keyword, actual_text_content in meta['itxt']:
-            if itxt_keyword == 'license':
-                try:
-                    parts = actual_text_content.strip().split(' ', 1) # Add .strip() before splitting
-                    if len(parts) == 2:
-                        part1_hex_len_of_part2_str = parts[0]
-                        part2_hex_original_file_size_str = parts[1]
-                        
-                        # ---
-                        # Optional: Validate part1 against actual length of part2
-                        try:
-                            expected_len_of_part2_val_from_header = int.from_bytes(bytes.fromhex(part1_hex_len_of_part2_str), 'big')
-                            actual_len_of_part2_str_in_bytes = len(part2_hex_original_file_size_str.encode('utf-8'))
-                            if expected_len_of_part2_val_from_header != actual_len_of_part2_str_in_bytes:
-                                print(f"Warning: iTXt 'license' header length field mismatch. Expected length of second part string: {expected_len_of_part2_val_from_header}, actual: {actual_len_of_part2_str_in_bytes}.", file=sys.stderr)
-                        except ValueError: # Handle potential error from int.from_bytes(bytes.fromhex(...))
-                            print(f"Warning: Could not validate part1 of iTXt 'license' header due to hex conversion error.", file=sys.stderr)
-                        # ---
-
-                        decoded_length_from_header = int.from_bytes(bytes.fromhex(part2_hex_original_file_size_str), 'big')
-                        break # Found and parsed our header
-                except ValueError:
-                    print("Warning: Could not parse 'license' iTXt header value (ValueError on hex conversion or split).", file=sys.stderr)
-                except Exception as e:
-                    print(f"Warning: Error processing 'license' iTXt header: {e}", file=sys.stderr)
-    else:
-        # Fallback: manually parse iTXt chunks if pypng didn't provide them
-        input_stream.seek(0)  # Reset stream position
-        r_chunks = png.Reader(file=input_stream)
-        try:
-            for chunk_type, chunk_data in r_chunks.chunks():
-                if chunk_type == b'iTXt':
-                    # Parse iTXt chunk format: keyword\0lang_tag\0translated_keyword\0\0text
-                    null_positions = []
-                    for i, byte in enumerate(chunk_data):
-                        if byte == 0:
-                            null_positions.append(i)
-                    
-                    if len(null_positions) >= 4:
-                        keyword = chunk_data[:null_positions[0]].decode('utf-8')
-                        if keyword == 'license':
-                            text_start_pos = null_positions[4] + 1
-                            actual_text_content = chunk_data[text_start_pos:].decode('utf-8')
-                            
+    for chunk_type, chunk_data in r.chunks():
+        if chunk_type == b'IHDR':
+            import struct as _struct
+            w, h = _struct.unpack('>II', chunk_data[:8])
+        elif chunk_type == b'IDAT':
+            idat_data += chunk_data
+        elif chunk_type == b'iTXt' and decoded_length_from_header is None:
+            null_positions = [i for i, byte in enumerate(chunk_data) if byte == 0]
+            if len(null_positions) >= 4:
+                keyword = chunk_data[:null_positions[0]].decode('utf-8', errors='replace')
+                if keyword == 'license':
+                    text_start = null_positions[4] + 1
+                    try:
+                        actual_text_content = chunk_data[text_start:].decode('utf-8')
+                        parts = actual_text_content.strip().split(' ', 1)
+                        if len(parts) == 2:
+                            part1_hex_len_of_part2_str = parts[0]
+                            part2_hex_original_file_size_str = parts[1]
                             try:
-                                parts = actual_text_content.strip().split(' ', 1)
-                                if len(parts) == 2:
-                                    part1_hex_len_of_part2_str = parts[0]
-                                    part2_hex_original_file_size_str = parts[1]
-                                    
-                                    # ---
-                                    # Optional: Validate part1 against actual length of part2
-                                    try:
-                                        expected_len_of_part2_val_from_header = int.from_bytes(bytes.fromhex(part1_hex_len_of_part2_str), 'big')
-                                        actual_len_of_part2_str_in_bytes = len(part2_hex_original_file_size_str.encode('utf-8'))
-                                        if expected_len_of_part2_val_from_header != actual_len_of_part2_str_in_bytes:
-                                            print(f"Warning: iTXt 'license' header length field mismatch. Expected length of second part string: {expected_len_of_part2_val_from_header}, actual: {actual_len_of_part2_str_in_bytes}.", file=sys.stderr)
-                                    except ValueError: # Handle potential error from int.from_bytes(bytes.fromhex(...))
-                                        print(f"Warning: Could not validate part1 of iTXt 'license' header due to hex conversion error.", file=sys.stderr)
-                                    # ---
-
-                                    decoded_length_from_header = int.from_bytes(bytes.fromhex(part2_hex_original_file_size_str), 'big')
-                                    break # Found and parsed our header
+                                expected_len_of_part2_val_from_header = int.from_bytes(bytes.fromhex(part1_hex_len_of_part2_str), 'big')
+                                actual_len_of_part2_str_in_bytes = len(part2_hex_original_file_size_str.encode('utf-8'))
+                                if expected_len_of_part2_val_from_header != actual_len_of_part2_str_in_bytes:
+                                    print(f"Warning: iTXt 'license' header length field mismatch. Expected length of second part string: {expected_len_of_part2_val_from_header}, actual: {actual_len_of_part2_str_in_bytes}.", file=sys.stderr)
                             except ValueError:
-                                print("Warning: Could not parse 'license' iTXt header value (ValueError on hex conversion or split).", file=sys.stderr)
-                            except Exception as e:
-                                print(f"Warning: Error processing 'license' iTXt header: {e}", file=sys.stderr)
-                    break  # Only process the first iTXt chunk
-        except Exception as e:
-            print(f"Warning: Error reading iTXt chunks: {e}", file=sys.stderr)
+                                print(f"Warning: Could not validate part1 of iTXt 'license' header due to hex conversion error.", file=sys.stderr)
+                            decoded_length_from_header = int.from_bytes(bytes.fromhex(part2_hex_original_file_size_str), 'big')
+                    except ValueError:
+                        print("Warning: Could not parse 'license' iTXt header value (ValueError on hex conversion or split).", file=sys.stderr)
+                    except Exception as e:
+                        print(f"Warning: Error processing 'license' iTXt header: {e}", file=sys.stderr)
+
+    decompressed = zlib.decompress(bytes(idat_data))
+    bpp = 4  # RGBA
+    row_size = 1 + w * bpp  # filter byte + pixel bytes per row
+    pixel_data = bytearray()
+    for y in range(h):
+        row_start = y * row_size
+        pixel_data += decompressed[row_start + 1 : row_start + row_size]
+    img_data = bytes(pixel_data)
 
     final_length_target = length_override if length_override is not None else decoded_length_from_header
 
-    # Only output up to the embedded data length, not the full RGBA image
-    max_embedded_bytes = w * h * 4  # RGBA
+    max_embedded_bytes = w * h * bpp
 
     if final_length_target is not None:
-        # Output exactly the number of bytes specified by the header (or -l), padding only if needed
         if final_length_target <= max_embedded_bytes:
             output_stream.write(img_data[:final_length_target])
         else:
@@ -295,7 +261,6 @@ def decode(input_stream, output_stream, length_override, rand_source, width=None
             padding_bytes = read_bytes_from_source(padding_needed, rand_source)
             output_stream.write(padding_bytes)
     else:
-        # No length specified from header or CLI, write all embedded data (not padded RGBA)
         output_stream.write(img_data[:max_embedded_bytes])
 
 def main():
