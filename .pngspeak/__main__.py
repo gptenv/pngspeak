@@ -6,7 +6,19 @@ def read_bytes_from_source(n, rand_source):
         path = pathlib.Path(rand_source)
         if path.exists():
             with open(rand_source, 'rb') as f:
-                return f.read(n)
+                file_bytes = f.read()
+            if not file_bytes:
+                # Empty file: fall through to the same fallback used for an
+                # empty --rand string, instead of silently returning b"" and
+                # leaving the caller short by `n` bytes.
+                try:
+                    return os.urandom(n)
+                except (NotImplementedError, OSError):
+                    return bytes(random.getrandbits(8) for _ in range(n))
+            # A file shorter than `n` bytes used to silently short-read here;
+            # repeat it to fill exactly `n` bytes, same convention as the
+            # repeated-string fallback below.
+            return (file_bytes * (n // len(file_bytes) + 1))[:n]
         # If not a file, treat rand_source as a string to repeat
         encoded_bytes = rand_source.encode('utf-8') # Specify encoding
         if not encoded_bytes: # Handle empty string for --rand
@@ -165,8 +177,11 @@ def encode(input_stream, output_stream, cli_width_arg, cli_height_arg, cli_lengt
     # 5. Write PNG
     output_stream.write(b"\x89PNG\r\n\x1a\n")
 
-    ihdr_w = uw if uw else grid_w
-    ihdr_h = uh if uh else grid_h
+    # uw/uh are validated in main() to always be given together (or not at
+    # all), so IHDR's dimensions and the IDAT pixel data written below
+    # (which only upscales when both are set) never disagree.
+    ihdr_w = uw if (uw and uh) else grid_w
+    ihdr_h = uh if (uw and uh) else grid_h
     ihdr = struct.pack(">IIBBBBB", ihdr_w, ihdr_h, 8, 6, 0, 0, 0)
     write_chunk(output_stream, b'IHDR', ihdr)
     
@@ -216,7 +231,12 @@ def decode(input_stream, output_stream, length_override, rand_source, width=None
             idat_data += chunk_data
         elif chunk_type == b'iTXt' and decoded_length_from_header is None:
             null_positions = [i for i, byte in enumerate(chunk_data) if byte == 0]
-            if len(null_positions) >= 4:
+            # Need keyword-null, compression flag/method bytes, and the two
+            # (empty) language-tag/translated-keyword nulls before the text
+            # -- that's 5 null-valued bytes, so null_positions[4] must exist.
+            # The old '>= 4' check let a short/malformed chunk pass the guard
+            # and then raise IndexError below instead of the warning path.
+            if len(null_positions) >= 5:
                 keyword = chunk_data[:null_positions[0]].decode('utf-8', errors='replace')
                 if keyword == 'license':
                     text_start = null_positions[4] + 1
@@ -276,25 +296,35 @@ def main():
     parser.add_argument("-f", "--file", type=str)
     args = parser.parse_args()
 
-    op_sequence = []
-    for a in sys.argv:
-        if a in ("-e", "--encode"): op_sequence.append("encode")
-        if a in ("-d", "--decode"): op_sequence.append("decode")
+    # Dispatch off argparse's own parsed counts instead of re-scanning
+    # sys.argv: the old re-scan looked for literal "-e"/"-d"/"--encode"/
+    # "--decode" tokens, which missed a bundled short flag like "-ed"
+    # entirely (argparse itself counts that correctly as one of each), and
+    # silently ran only the first requested op when both were given instead
+    # of erroring on the ambiguity.
+    if args.encode and args.decode:
+        parser.error("--encode/-e and --decode/-d are mutually exclusive; specify only one.")
+    if not args.encode and not args.decode:
+        parser.error("must specify one of --encode/-e or --decode/-d.")
+
+    if (args.upscale_width is None) != (args.upscale_height is None):
+        parser.error("--upscale-width/-uw and --upscale-height/-uh must be given together.")
 
     data_in = sys.stdin.buffer
     data_out = sys.stdout.buffer
-    if args.file:
-        out = open(args.file, "wb")
-    else:
-        out = data_out
-
-    for op in op_sequence:
-        if op == "encode":
+    # Only open (and truncate) the output file now that an op is guaranteed
+    # to run -- opening it unconditionally earlier meant a bad argument
+    # combination (previously: neither/both of -e/-d) still truncated an
+    # existing -f target before failing.
+    out = open(args.file, "wb") if args.file else data_out
+    try:
+        if args.encode:
             encode(data_in, out, args.width, args.height, args.length, args.rand, args.upscale_width, args.upscale_height)
-            return
-        elif op == "decode":
+        else:
             decode(data_in, out, args.length, args.rand, args.width, args.height, args.upscale_width, args.upscale_height)
-            return
+    finally:
+        if args.file:
+            out.close()
 
 if __name__ == "__main__":
     main()
